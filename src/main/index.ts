@@ -69,8 +69,22 @@ function registerIpc(): void {
   ipcMain.handle('creation:versions', () => listCreationVersions())
 
   ipcMain.handle('polish:available', () => checkClaudeAvailable())
-  ipcMain.handle('polish:run', (_e, content: string, cwd?: string | null) =>
-    polishDocument(content, cwd)
+  ipcMain.handle(
+    'polish:run',
+    (
+      e,
+      runId: string,
+      content: string,
+      cwd?: string | null,
+      docRelPath?: string | null
+    ) => {
+      // 执行过程通过同一 runId 实时推给渲染层，界面才能显示「到底在干什么」
+      return polishDocument(content, cwd, (entry) => {
+        if (!e.sender.isDestroyed()) {
+          e.sender.send('polish:log', runId, entry)
+        }
+      }, docRelPath)
+    }
   )
 
   // ---------------- 项目与 git ----------------

@@ -9,6 +9,7 @@ import { useConfigStore } from '../store'
 import { renderMarkdown } from '../lib/markdown-render'
 import MarkdownToolbar from './MarkdownToolbar'
 import PolishDialog from './PolishDialog'
+import PolishProgress, { type PolishLogEntry } from './PolishProgress'
 import { applyAction, diffRange } from '../lib/markdown-actions'
 import type { Action } from '../lib/markdown-actions'
 
@@ -44,6 +45,8 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** 写入序号：只认最后一次的结果，避免旧请求回来覆盖新状态 */
   const seqRef = useRef(0)
+  /** 当前这轮润色的标识，用于过滤日志 */
+  const runIdRef = useRef('')
 
   const flush = useCallback(async (): Promise<void> => {
     if (timerRef.current) {
@@ -208,6 +211,19 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
   const [polishError, setPolishError] = useState('')
   /** 待确认的润色结果；非 null 时弹出确认框 */
   const [pending, setPending] = useState<{ original: string; polished: string } | null>(null)
+  /** 执行过程日志（实时从主进程推送过来） */
+  const [polishLogs, setPolishLogs] = useState<PolishLogEntry[]>([])
+  const [showProgress, setShowProgress] = useState(false)
+  const [phase, setPhase] = useState('')
+
+  // 订阅主进程推来的执行过程日志
+  useEffect(() => {
+    const off = window.api.onPolishLog((runId: string, entry: PolishLogEntry) => {
+      if (runId !== runIdRef.current) return
+      setPolishLogs((prev) => [...prev, entry])
+    })
+    return off
+  }, [])
 
   const runPolish = useCallback(async (): Promise<void> => {
     const v = view()
@@ -217,21 +233,50 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
       return
     }
     setPolishError('')
+    setPolishLogs([])
+    setPhase('准备中…')
+    setShowProgress(true)
     setPolishing(true)
+
+    // 每次执行一个独立 runId，避免上一次的日志串到这一次
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    runIdRef.current = runId
+
+    const cwd = project?.path ?? null
+    const docRel = creation.filePath ?? null
+    setPolishLogs([
+      {
+        kind: 'info',
+        text: `开始润色：文档 ${source.length} 字符`,
+        at: Date.now()
+      },
+      {
+        kind: 'info',
+        text: cwd
+          ? `关联项目「${project?.name}」，将在该项目目录下执行`
+          : '未关联项目，将在应用默认目录下执行（不读取项目上下文）',
+        at: Date.now()
+      }
+    ])
+
     try {
-      const r = await window.api.polish(source, project?.path ?? null)
+      setPhase('执行中…')
+      const r = await window.api.polish(runId, source, cwd, docRel)
       if (!r.ok) {
         setPolishError(r.error ?? '润色失败')
+        setPhase('失败')
         return
       }
+      setPhase('已完成，请确认改动')
       // 结果先不落盘，交给用户确认或撤回
       setPending({ original: source, polished: r.text })
     } catch (err) {
       setPolishError(String(err))
+      setPhase('失败')
     } finally {
       setPolishing(false)
     }
-  }, [content, project?.path])
+  }, [content, project?.path, project?.name, creation.filePath])
 
   /** 用户确认：用润色稿替换编辑器内容，并立即落盘 */
   const applyPolish = useCallback(
@@ -397,6 +442,16 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
           polished={pending.polished}
           onAccept={applyPolish}
           onReject={rejectPolish}
+        />
+      )}
+
+      {/* 执行过程面板：让用户看得见到底执行了什么、在哪个目录 */}
+      {showProgress && !pending && (
+        <PolishProgress
+          phase={phase}
+          logs={polishLogs}
+          projectPath={project?.path ?? null}
+          onClose={() => setShowProgress(false)}
         />
       )}
     </div>

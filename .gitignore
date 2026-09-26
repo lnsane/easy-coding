@@ -11,6 +11,10 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
+# 调研/临时材料（本机产物，不进版本库）
+.cc-research/
+.tmp/
+
 # 本机配置：.npmrc 里是国内镜像（electron_mirror 等），只对当前机器有效。
 # 提交上去会让境外 CI runner 也走国内镜像，反而变慢甚至超时，所以留在本机。
 .npmrc

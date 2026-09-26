@@ -9,6 +9,13 @@ import type {
   PrepareProjectResult
 } from '../shared/types'
 
+/** 润色执行过程的一条日志（与主进程 PolishLog 对应） */
+export interface PolishLogEntry {
+  kind: 'info' | 'cmd' | 'out' | 'err' | 'done'
+  text: string
+  at: number
+}
+
 export interface EasyCodeApi {
   listConfigs: () => Promise<AIConfig[]>
   getActiveConfig: () => Promise<AIConfig | null>
@@ -26,8 +33,21 @@ export interface EasyCodeApi {
 
   /** 本机 Claude Code CLI 是否可用 */
   polishAvailable: () => Promise<{ available: boolean; path?: string }>
-  /** 调用 Claude Code 润色文档；传 cwd 则在该目录下执行（关联项目时用） */
-  polish: (content: string, cwd?: string | null) => Promise<{ ok: boolean; text: string; error?: string }>
+  /**
+   * 调用 Claude Code 润色文档。
+   * @param runId      本次执行标识，用于接收执行过程日志
+   * @param cwd        关联项目时传项目根目录，Claude Code 在该目录下执行
+   * @param docRelPath 文档相对项目根的路径；给了它就让 Claude Code 自己去读
+   *                   （而不是把正文塞进 stdin），润色更贴合项目上下文
+   */
+  polish: (
+    runId: string,
+    content: string,
+    cwd?: string | null,
+    docRelPath?: string | null
+  ) => Promise<{ ok: boolean; text: string; error?: string }>
+  /** 订阅润色执行过程日志；返回取消订阅函数 */
+  onPolishLog: (cb: (runId: string, entry: PolishLogEntry) => void) => () => void
 
   // ---------------- 项目与 git ----------------
   listProjects: () => Promise<Project[]>
@@ -71,7 +91,13 @@ const api: EasyCodeApi = {
     ipcRenderer.invoke('creation:set-file', id, filePath, branch),
 
   polishAvailable: () => ipcRenderer.invoke('polish:available'),
-  polish: (content, cwd) => ipcRenderer.invoke('polish:run', content, cwd ?? null),
+  polish: (runId, content, cwd, docRelPath) =>
+    ipcRenderer.invoke('polish:run', runId, content, cwd ?? null, docRelPath ?? null),
+  onPolishLog: (cb) => {
+    const listener = (_e: unknown, runId: string, entry: PolishLogEntry): void => cb(runId, entry)
+    ipcRenderer.on('polish:log', listener)
+    return () => ipcRenderer.removeListener('polish:log', listener)
+  },
 
   listProjects: () => ipcRenderer.invoke('project:list'),
   getProject: (id) => ipcRenderer.invoke('project:get', id),
