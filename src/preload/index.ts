@@ -6,7 +6,12 @@ import type {
   CreationInput,
   CreationUpdate,
   Project,
-  PrepareProjectResult
+  PrepareProjectResult,
+  Role,
+  RoleInput,
+  RunRecord,
+  RunLogEntry,
+  OrchestrateResult
 } from '../shared/types'
 
 /** 润色执行过程的一条日志（与主进程 PolishLog 对应） */
@@ -72,6 +77,38 @@ export interface EasyCodeApi {
   writeDocFile: (projectPath: string, title: string, content: string) => Promise<string>
   writeFileAt: (projectPath: string, rel: string, content: string) => Promise<void>
   readFileAt: (projectPath: string, rel: string) => Promise<string | null>
+
+  // ---------------- 编排角色 ----------------
+  listRoles: () => Promise<Role[]>
+  getRole: (id: string) => Promise<Role | null>
+  saveRole: (input: RoleInput) => Promise<Role>
+  deleteRole: (id: string) => Promise<{ ok: boolean; error?: string }>
+  duplicateRole: (id: string) => Promise<Role | null>
+  setCreationRole: (creationId: string, roleId: string | null) => Promise<void>
+
+  // ---------------- 执行记录 ----------------
+  listRuns: (creationId: string) => Promise<RunRecord[]>
+  saveRun: (rec: Omit<RunRecord, 'id'> & { id?: string }) => Promise<RunRecord>
+  deleteRun: (id: string) => Promise<void>
+
+  // ---------------- 执行编排 ----------------
+  /**
+   * 执行编排任务：让 Claude Code 在项目里按需求文档实现代码。
+   * ⚠️ 会修改项目文件，调用前必须让用户确认。
+   */
+  orchestrate: (
+    runId: string,
+    input: {
+      projectPath: string
+      docRelPath: string
+      version: string
+      role: { id: string; name: string; title: string; duty: string; prompt: string }
+    }
+  ) => Promise<OrchestrateResult>
+  /** 中止正在执行的编排任务 */
+  abortOrchestrate: (runId: string) => Promise<boolean>
+  /** 订阅编排执行日志；返回取消订阅函数 */
+  onOrchestrateLog: (cb: (runId: string, entry: RunLogEntry) => void) => () => void
 }
 
 const api: EasyCodeApi = {
@@ -112,7 +149,27 @@ const api: EasyCodeApi = {
     ipcRenderer.invoke('file:write-doc', projectPath, title, content),
   writeFileAt: (projectPath, rel, content) =>
     ipcRenderer.invoke('file:write-at', projectPath, rel, content),
-  readFileAt: (projectPath, rel) => ipcRenderer.invoke('file:read-at', projectPath, rel)
+  readFileAt: (projectPath, rel) => ipcRenderer.invoke('file:read-at', projectPath, rel),
+
+  listRoles: () => ipcRenderer.invoke('role:list'),
+  getRole: (id) => ipcRenderer.invoke('role:get', id),
+  saveRole: (input) => ipcRenderer.invoke('role:save', input),
+  deleteRole: (id) => ipcRenderer.invoke('role:delete', id),
+  duplicateRole: (id) => ipcRenderer.invoke('role:duplicate', id),
+  setCreationRole: (creationId, roleId) =>
+    ipcRenderer.invoke('role:set-for-creation', creationId, roleId),
+
+  listRuns: (creationId) => ipcRenderer.invoke('run:list', creationId),
+  saveRun: (rec) => ipcRenderer.invoke('run:save', rec),
+  deleteRun: (id) => ipcRenderer.invoke('run:delete', id),
+
+  orchestrate: (runId, input) => ipcRenderer.invoke('orchestrate:run', runId, input),
+  abortOrchestrate: (runId) => ipcRenderer.invoke('orchestrate:abort', runId),
+  onOrchestrateLog: (cb) => {
+    const listener = (_e: unknown, runId: string, entry: RunLogEntry): void => cb(runId, entry)
+    ipcRenderer.on('orchestrate:log', listener)
+    return () => ipcRenderer.removeListener('orchestrate:log', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

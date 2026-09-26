@@ -4,12 +4,14 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { EditorView } from '@codemirror/view'
 import { redo as cmRedo, undo as cmUndo } from '@codemirror/commands'
 import { oneDark } from '@codemirror/theme-one-dark'
-import type { Creation } from '../../../shared/types'
+import type { Creation, Role } from '../../../shared/types'
 import { useConfigStore } from '../store'
 import { renderMarkdown } from '../lib/markdown-render'
 import MarkdownToolbar from './MarkdownToolbar'
 import PolishDialog from './PolishDialog'
-import PolishProgress, { type PolishLogEntry } from './PolishProgress'
+import RunProgress, { type PolishLogEntry } from './RunProgress'
+import RunConfirmDialog from './RunConfirmDialog'
+import { buildRunSection } from '../../../shared/run-section'
 import { applyAction, diffRange } from '../lib/markdown-actions'
 import type { Action } from '../lib/markdown-actions'
 
@@ -301,6 +303,129 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
     view()?.focus()
   }, [])
 
+  // ------------------------- 执行编排任务 -------------------------
+
+  const roles = useConfigStore((s) => s.roles)
+  const loadRoles = useConfigStore((s) => s.loadRoles)
+  const [orchestrating, setOrchestrating] = useState(false)
+  const [showRunConfirm, setShowRunConfirm] = useState(false)
+  const [orchestrateError, setOrchestrateError] = useState('')
+  const [runLogs, setRunLogs] = useState<PolishLogEntry[]>([])
+  const [runPhase, setRunPhase] = useState('')
+  const [runSummary, setRunSummary] = useState('')
+  const [showRunProgress, setShowRunProgress] = useState(false)
+  /** 当前编排执行的标识，用于过滤日志与中止 */
+  const orchRunIdRef = useRef('')
+
+  useEffect(() => {
+    void loadRoles()
+  }, [loadRoles])
+
+  // 订阅编排执行日志
+  useEffect(() => {
+    const off = window.api.onOrchestrateLog((runId: string, entry: PolishLogEntry) => {
+      if (runId !== orchRunIdRef.current) return
+      setRunLogs((prev) => [...prev, entry])
+    })
+    return off
+  }, [])
+
+  const startOrchestrate = useCallback(
+    async (role: Role): Promise<void> => {
+      if (!project || !creation.filePath) {
+        setOrchestrateError('需要先关联项目，并为文档生成 project 内的文件路径。')
+        setShowRunConfirm(false)
+        return
+      }
+      setShowRunConfirm(false)
+      setOrchestrateError('')
+
+      // 先把编辑器里的最新内容落盘——AI 要读的是磁盘上的最新需求，不能是旧文件
+      await flush()
+
+      const runId = `orch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      orchRunIdRef.current = runId
+      setRunLogs([])
+      setRunSummary('')
+      setRunPhase('准备中…')
+      setShowRunProgress(true)
+      setOrchestrating(true)
+
+      try {
+        setRunPhase('执行中…')
+        const r = await window.api.orchestrate(runId, {
+          projectPath: project.path,
+          docRelPath: creation.filePath,
+          version: creation.version,
+          role: {
+            id: role.id,
+            name: role.name,
+            title: role.title,
+            duty: role.duty,
+            prompt: role.prompt
+          }
+        })
+
+        const meta = r.meta
+        if (meta) {
+          setRunSummary(
+            `${meta.status === 'ok' ? '成功' : meta.status === 'cancelled' ? '已中止' : '失败'} · ${meta.changeSummary}`
+          )
+          // 把「执行记录」追加到文档（这也是需求文档里选定的结果去向）
+          try {
+            const section = buildRunSection(meta, creation.filePath)
+            const v = view()
+            const cur = v ? v.state.doc.toString() : content
+            const next = cur.replace(/\s*$/, '') + '\n' + section
+            if (v) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: next } })
+            setContent(next)
+            pendingRef.current = { title, content: next }
+            await flush()
+          } catch {
+            // 追加记录失败不影响执行结果本身
+          }
+          // 落执行记录到库
+          try {
+            await window.api.saveRun({
+              creationId: creation.id,
+              roleId: role.id,
+              roleName: role.name,
+              branch: meta.branch,
+              status: meta.status,
+              startedAt: meta.startedAt,
+              endedAt: meta.endedAt,
+              changedFiles: meta.changedFiles,
+              changeSummary: meta.changeSummary,
+              headBefore: meta.headBefore,
+              resultText: meta.resultText,
+              log: runLogs,
+              error: meta.error
+            })
+          } catch {
+            // 记录失败不影响主流程
+          }
+        }
+
+        if (!r.ok) setOrchestrateError(r.error ?? '执行未成功')
+        else setRunPhase('已完成')
+        if (r.meta?.status === 'cancelled') setRunPhase('已中止')
+      } catch (err) {
+        setOrchestrateError(String(err))
+        setRunPhase('失败')
+      } finally {
+        setOrchestrating(false)
+      }
+    },
+    [project, creation.filePath, creation.version, creation.id, content, title, flush, runLogs]
+  )
+
+  /** 中止：通知主进程杀掉进程树 */
+  const abortOrchestrate = useCallback((): void => {
+    const id = orchRunIdRef.current
+    if (id) void window.api.abortOrchestrate(id)
+    setRunPhase('正在中止…')
+  }, [])
+
   const html = useMemo(() => renderMarkdown(content), [content])
 
   /**
@@ -347,6 +472,28 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
             </>
           ) : (
             <>✨ 润色</>
+          )}
+        </button>
+
+        {/* 执行编排任务：以本文档为需求说明，让 AI 在项目里写代码 */}
+        <button
+          type="button"
+          onClick={() => setShowRunConfirm(true)}
+          disabled={orchestrating || polishing}
+          title={
+            project
+              ? '以本文档为需求，让 AI 在这个项目里实现代码'
+              : '需要先关联项目才能执行编排任务'
+          }
+          className="flex items-center gap-1 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 transition hover:border-emerald-500 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {orchestrating ? (
+            <>
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border border-zinc-500 border-t-transparent" />
+              执行中…
+            </>
+          ) : (
+            <>⚡ 执行编排任务</>
           )}
         </button>
         <span className="rounded bg-indigo-500/15 px-2 py-0.5 text-[11px] text-indigo-300">
@@ -447,12 +594,52 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
 
       {/* 执行过程面板：让用户看得见到底执行了什么、在哪个目录 */}
       {showProgress && !pending && (
-        <PolishProgress
+        <RunProgress
           phase={phase}
           logs={polishLogs}
           projectPath={project?.path ?? null}
           onClose={() => setShowProgress(false)}
         />
+      )}
+
+      {/* 执行编排前的确认：明确告知会改哪个目录，需勾选才能开始 */}
+      {showRunConfirm && project && creation.filePath && (
+        <RunConfirmDialog
+          projectName={project.name}
+          projectPath={project.path}
+          docRelPath={creation.filePath}
+          branch={creation.branch}
+          roles={roles}
+          defaultRoleId={creation.roleId ?? null}
+          onCancel={() => setShowRunConfirm(false)}
+          onConfirm={(role) => void startOrchestrate(role)}
+        />
+      )}
+
+      {/* 编排执行过程：可中止 */}
+      {showRunProgress && (
+        <RunProgress
+          phase={runPhase}
+          logs={runLogs}
+          projectPath={project?.path ?? null}
+          running={orchestrating}
+          summary={runSummary}
+          onAbort={abortOrchestrate}
+          onClose={() => setShowRunProgress(false)}
+        />
+      )}
+
+      {orchestrateError && (
+        <div className="absolute inset-x-0 bottom-0 z-30 mx-4 mb-4 flex items-start gap-2 rounded-xl border border-red-900/60 bg-red-950/90 px-4 py-3">
+          <span className="text-xs text-red-200">{orchestrateError}</span>
+          <button
+            type="button"
+            onClick={() => setOrchestrateError('')}
+            className="ml-auto shrink-0 text-xs text-red-300/70 hover:text-red-200"
+          >
+            关闭
+          </button>
+        </div>
       )}
     </div>
   )

@@ -1,6 +1,6 @@
 {
   "name": "easycode",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "description": "easyCode - AI 协作与编排桌面应用",
   "author": {
@@ -17,7 +17,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-markdown-actions.mjs && node scripts/test-creations-db.mjs && node scripts/test-autosave.mjs && node scripts/test-polish-diff.mjs && node scripts/test-git.mjs && node scripts/test-files.mjs && node scripts/test-migrate.mjs && node scripts/test-e2e-flow.mjs && node scripts/test-polish-cwd.mjs && node scripts/test-polish-filemode.mjs",
+    "test": "node scripts/test-markdown-actions.mjs && node scripts/test-creations-db.mjs && node scripts/test-autosave.mjs && node scripts/test-polish-diff.mjs && node scripts/test-git.mjs && node scripts/test-files.mjs && node scripts/test-migrate.mjs && node scripts/test-e2e-flow.mjs && node scripts/test-polish-cwd.mjs && node scripts/test-polish-filemode.mjs && node scripts/test-orchestrate-security.mjs",
     "start": "electron-vite preview",
     "pack": "electron-vite build && electron-builder"
   },

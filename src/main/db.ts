@@ -9,7 +9,11 @@ import type {
   Creation,
   CreationInput,
   CreationUpdate,
-  Project
+  Project,
+  Role,
+  RoleInput,
+  RunRecord,
+  RunLogEntry
 } from '../shared/types'
 import type { ApiStyle } from '../shared/provider-presets'
 
@@ -91,6 +95,33 @@ export function initDb(): void {
       last_used_at INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_path ON projects(path);
+    CREATE TABLE IF NOT EXISTS roles (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      title      TEXT NOT NULL DEFAULT '',
+      duty       TEXT NOT NULL DEFAULT '',
+      prompt     TEXT NOT NULL DEFAULT '',
+      builtin    INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS runs (
+      id             TEXT PRIMARY KEY,
+      creation_id    TEXT NOT NULL,
+      role_id        TEXT NOT NULL DEFAULT '',
+      role_name      TEXT NOT NULL DEFAULT '',
+      branch         TEXT NOT NULL DEFAULT '',
+      status         TEXT NOT NULL,
+      started_at     INTEGER NOT NULL,
+      ended_at       INTEGER,
+      changed_files  TEXT NOT NULL DEFAULT '[]',
+      change_summary TEXT NOT NULL DEFAULT '',
+      head_before    TEXT NOT NULL DEFAULT '',
+      result_text    TEXT NOT NULL DEFAULT '',
+      log            TEXT NOT NULL DEFAULT '[]',
+      error          TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_runs_creation ON runs(creation_id, started_at DESC);
   `)
   migrate()
 }
@@ -126,6 +157,10 @@ function migrate(): void {
   }
   if (!ccols.includes('branch')) {
     d.exec('ALTER TABLE creations ADD COLUMN branch TEXT')
+  }
+  // v0.5.0：创作默认绑定的编排角色
+  if (!ccols.includes('role_id')) {
+    d.exec('ALTER TABLE creations ADD COLUMN role_id TEXT')
   }
 }
 
@@ -240,6 +275,7 @@ interface CreationRow {
   project_id: string | null
   file_path: string | null
   branch: string | null
+  role_id: string | null
   created_at: number
   updated_at: number
 }
@@ -254,6 +290,7 @@ function rowToCreation(row: CreationRow): Creation {
     projectId: row.project_id ?? null,
     filePath: row.file_path ?? null,
     branch: row.branch ?? null,
+    roleId: row.role_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
@@ -421,4 +458,240 @@ export function touchProject(id: string): void {
 /** 移除项目登记（不动磁盘上的代码） */
 export function deleteProject(id: string): void {
   getDb().prepare('DELETE FROM projects WHERE id = ?').run(id)
+}
+
+// ===================== 编排角色（roles） =====================
+
+interface RoleRow {
+  id: string
+  name: string
+  title: string
+  duty: string
+  prompt: string
+  builtin: number
+  created_at: number
+  updated_at: number
+}
+
+function rowToRole(row: RoleRow): Role {
+  return {
+    id: row.id,
+    name: row.name,
+    title: row.title,
+    duty: row.duty,
+    prompt: row.prompt,
+    builtin: row.builtin === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+/**
+ * 内置角色。首次运行（roles 表为空）时写入。
+ *
+ * 「代码审查员」刻意写成只读：它的 prompt 要求只指出问题、不改代码，
+ * 配合执行时的工具白名单，使其成为安全的「先看看」入口。
+ */
+const BUILTIN_ROLES: Omit<Role, 'id' | 'builtin' | 'createdAt' | 'updatedAt'>[] = [
+  {
+    name: '前端工程师',
+    title: '高级前端开发',
+    duty: '按需求实现界面与交互，遵循项目现有的组件风格与样式约定。',
+    prompt:
+      '你擅长前端开发。优先复用项目已有的组件与样式约定，不要引入新的 UI 库或状态管理库。' +
+      '注意交互细节（加载态、空状态、错误提示）与可访问性。'
+  },
+  {
+    name: '后端工程师',
+    title: '后端开发',
+    duty: '按需求实现接口、数据模型与业务逻辑。',
+    prompt:
+      '你擅长后端开发。注意数据校验、错误处理与边界情况；接口设计遵循项目既有风格；' +
+      '涉及数据结构变更时要考虑兼容与迁移。'
+  },
+  {
+    name: '全栈工程师',
+    title: '全栈开发',
+    duty: '前后端一并实现，贯通从界面到数据的完整链路。',
+    prompt:
+      '你擅长全栈开发。先理清数据流（界面 → 接口 → 存储）再动手，保证前后端契约一致。'
+  },
+  {
+    name: '需求分析师',
+    title: '产品经理',
+    duty: '把需求整理成可执行的开发任务清单，明确边界与验收标准。',
+    prompt:
+      '你是需求分析师。**不要修改任何代码文件**，只输出一份开发任务清单 markdown：' +
+      '拆解为有序的任务项，每项写明要改哪些文件/模块、验收标准是什么、有哪些需要确认的假设。' +
+      '把任务清单作为你的回复正文输出。'
+  },
+  {
+    name: '代码审查员',
+    title: '技术负责人',
+    duty: '审查现有实现是否符合需求，指出问题与风险。',
+    prompt:
+      '你是代码审查者。**不要修改任何文件**，只阅读代码并输出审查意见：' +
+      '需求是否已实现、有无遗漏、潜在缺陷、边界与异常处理、可维护性问题。' +
+      '按严重程度排序，指出具体文件与位置，并给出修改建议。'
+  }
+]
+
+/** 首次运行时植入内置角色；已有数据则不动 */
+function seedBuiltinRoles(): void {
+  const d = getDb()
+  const n = (d.prepare('SELECT COUNT(*) AS n FROM roles').get() as unknown as { n: number }).n
+  if (Number(n) > 0) return
+  const now = Date.now()
+  const stmt = d.prepare(
+    `INSERT INTO roles (id, name, title, duty, prompt, builtin, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+  )
+  for (const r of BUILTIN_ROLES) {
+    stmt.run(crypto.randomUUID(), r.name, r.title, r.duty, r.prompt, now, now)
+  }
+}
+
+export function listRoles(): Role[] {
+  seedBuiltinRoles()
+  const rows = getDb()
+    .prepare('SELECT * FROM roles ORDER BY builtin DESC, created_at ASC')
+    .all() as unknown as RoleRow[]
+  return rows.map(rowToRole)
+}
+
+export function getRole(id: string): Role | null {
+  const row = getDb().prepare('SELECT * FROM roles WHERE id = ?').get(id) as unknown as
+    | RoleRow
+    | undefined
+  return row ? rowToRole(row) : null
+}
+
+export function saveRole(input: RoleInput): Role {
+  const d = getDb()
+  const now = Date.now()
+  if (input.id) {
+    d.prepare(
+      'UPDATE roles SET name = ?, title = ?, duty = ?, prompt = ?, updated_at = ? WHERE id = ?'
+    ).run(input.name, input.title, input.duty, input.prompt, now, input.id)
+    const row = d.prepare('SELECT * FROM roles WHERE id = ?').get(input.id) as unknown as RoleRow
+    return rowToRole(row)
+  }
+  const id = crypto.randomUUID()
+  d.prepare(
+    `INSERT INTO roles (id, name, title, duty, prompt, builtin, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+  ).run(id, input.name, input.title, input.duty, input.prompt, now, now)
+  const row = d.prepare('SELECT * FROM roles WHERE id = ?').get(id) as unknown as RoleRow
+  return rowToRole(row)
+}
+
+/** 删除角色。内置角色不允许删除（保护默认角色不被误删） */
+export function deleteRole(id: string): { ok: boolean; error?: string } {
+  const role = getRole(id)
+  if (!role) return { ok: true }
+  if (role.builtin) return { ok: false, error: '内置角色不可删除，可「复制为新角色」后再修改。' }
+  getDb().prepare('DELETE FROM roles WHERE id = ?').run(id)
+  return { ok: true }
+}
+
+/** 复制一个角色为新角色（用于在内置角色基础上改） */
+export function duplicateRole(id: string): Role | null {
+  const r = getRole(id)
+  if (!r) return null
+  return saveRole({
+    name: `${r.name} 副本`,
+    title: r.title,
+    duty: r.duty,
+    prompt: r.prompt
+  })
+}
+
+// ===================== 执行记录（runs） =====================
+
+interface RunRow {
+  id: string
+  creation_id: string
+  role_id: string
+  role_name: string
+  branch: string
+  status: string
+  started_at: number
+  ended_at: number | null
+  changed_files: string
+  change_summary: string
+  head_before: string
+  result_text: string
+  log: string
+  error: string | null
+}
+
+function rowToRun(row: RunRow): RunRecord {
+  const parseArr = <T,>(s: string, fallback: T): T => {
+    try {
+      return JSON.parse(s) as T
+    } catch {
+      return fallback
+    }
+  }
+  return {
+    id: row.id,
+    creationId: row.creation_id,
+    roleId: row.role_id,
+    roleName: row.role_name,
+    branch: row.branch,
+    status: row.status as RunRecord['status'],
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    changedFiles: parseArr<string[]>(row.changed_files, []),
+    changeSummary: row.change_summary,
+    headBefore: row.head_before,
+    resultText: row.result_text,
+    log: parseArr<RunLogEntry[]>(row.log, []),
+    error: row.error ?? undefined
+  }
+}
+
+export function listRuns(creationId: string): RunRecord[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM runs WHERE creation_id = ? ORDER BY started_at DESC')
+    .all(creationId) as unknown as RunRow[]
+  return rows.map(rowToRun)
+}
+
+export function saveRun(rec: Omit<RunRecord, 'id'> & { id?: string }): RunRecord {
+  const d = getDb()
+  const id = rec.id ?? crypto.randomUUID()
+  d.prepare(
+    `INSERT INTO runs (id, creation_id, role_id, role_name, branch, status, started_at, ended_at,
+                       changed_files, change_summary, head_before, result_text, log, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    rec.creationId,
+    rec.roleId,
+    rec.roleName,
+    rec.branch,
+    rec.status,
+    rec.startedAt,
+    rec.endedAt,
+    JSON.stringify(rec.changedFiles ?? []),
+    rec.changeSummary ?? '',
+    rec.headBefore ?? '',
+    rec.resultText ?? '',
+    JSON.stringify(rec.log ?? []),
+    rec.error ?? null
+  )
+  const row = d.prepare('SELECT * FROM runs WHERE id = ?').get(id) as unknown as RunRow
+  return rowToRun(row)
+}
+
+export function deleteRun(id: string): void {
+  getDb().prepare('DELETE FROM runs WHERE id = ?').run(id)
+}
+
+/** 设置创作默认绑定的角色 */
+export function setCreationRole(creationId: string, roleId: string | null): void {
+  getDb()
+    .prepare('UPDATE creations SET role_id = ?, updated_at = ? WHERE id = ?')
+    .run(roleId, Date.now(), creationId)
 }

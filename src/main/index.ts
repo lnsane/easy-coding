@@ -17,11 +17,22 @@ import {
   listProjects,
   getProject,
   upsertProject,
-  deleteProject
+  deleteProject,
+  listRoles,
+  getRole,
+  saveRole,
+  deleteRole,
+  duplicateRole,
+  listRuns,
+  saveRun,
+  deleteRun,
+  setCreationRole
 } from './db'
 import type { AIConfigInput, CreationInput, CreationUpdate } from '../shared/types'
-import { checkClaudeAvailable, polishDocument } from './polish'
+import { polishDocument } from './polish'
+import { checkClaudeAvailable } from './claude-bin'
 import { prepareProject, pickDirectory, projectBranchOf } from './projects'
+import { orchestrate } from './orchestrate'
 import { writeDocFile, writeFileAt, readFileAt, validateProjectDir } from './files'
 
 function createWindow(): void {
@@ -116,7 +127,56 @@ function registerIpc(): void {
   ipcMain.handle('creation:set-file', (_e, id: string, filePath: string, branch: string | null) =>
     setCreationFile(id, filePath, branch)
   )
+
+  // ---------------- 编排角色 ----------------
+  ipcMain.handle('role:list', () => listRoles())
+  ipcMain.handle('role:get', (_e, id: string) => getRole(id))
+  ipcMain.handle('role:save', (_e, input: Parameters<typeof saveRole>[0]) => saveRole(input))
+  ipcMain.handle('role:delete', (_e, id: string) => deleteRole(id))
+  ipcMain.handle('role:duplicate', (_e, id: string) => duplicateRole(id))
+  ipcMain.handle('role:set-for-creation', (_e, creationId: string, roleId: string | null) =>
+    setCreationRole(creationId, roleId)
+  )
+
+  // ---------------- 执行记录 ----------------
+  ipcMain.handle('run:list', (_e, creationId: string) => listRuns(creationId))
+  ipcMain.handle('run:save', (_e, rec: Parameters<typeof saveRun>[0]) => saveRun(rec))
+  ipcMain.handle('run:delete', (_e, id: string) => deleteRun(id))
+
+  // ---------------- 执行编排 ----------------
+  // 正在运行的任务：runId → 中止信号，供「中止」按钮置位
+  ipcMain.handle(
+    'orchestrate:run',
+    (
+      e,
+      runId: string,
+      input: Omit<Parameters<typeof orchestrate>[0], 'onLog' | 'signal'>
+    ) => {
+      const signal = { aborted: false }
+      activeRuns.set(runId, signal)
+      return orchestrate({
+        ...input,
+        signal,
+        onLog: (entry) => {
+          if (!e.sender.isDestroyed()) e.sender.send('orchestrate:log', runId, entry)
+        }
+      }).finally(() => {
+        activeRuns.delete(runId)
+      })
+    }
+  )
+  ipcMain.handle('orchestrate:abort', (_e, runId: string) => {
+    const s = activeRuns.get(runId)
+    if (s) {
+      s.aborted = true
+      return true
+    }
+    return false
+  })
 }
+
+/** 正在执行的编排任务：runId → 中止信号 */
+const activeRuns = new Map<string, { aborted: boolean }>()
 
 app.whenReady().then(() => {
   initDb()

@@ -6,7 +6,9 @@ import type {
   CreationInput,
   CreationUpdate,
   Project,
-  PrepareProjectResult
+  PrepareProjectResult,
+  Role,
+  RoleInput
 } from '../../shared/types'
 
 interface ConfigState {
@@ -33,6 +35,12 @@ interface ConfigState {
     localPath?: string | null
     version: string
   }) => Promise<PrepareProjectResult>
+
+  roles: Role[]
+  loadRoles: () => Promise<void>
+  saveRole: (input: RoleInput) => Promise<Role>
+  deleteRole: (id: string) => Promise<{ ok: boolean; error?: string }>
+  duplicateRole: (id: string) => Promise<Role | null>
 }
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
@@ -108,6 +116,33 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   prepareProject: async (input) => {
     const r = await window.api.prepareProject(input)
     await get().loadProjects()
+    return r
+  },
+
+  // ------------------------- 编排角色 -------------------------
+
+  roles: [],
+
+  loadRoles: async () => {
+    const roles = await window.api.listRoles()
+    set({ roles })
+  },
+
+  saveRole: async (input) => {
+    const saved = await window.api.saveRole(input)
+    await get().loadRoles()
+    return saved
+  },
+
+  deleteRole: async (id) => {
+    const r = await window.api.deleteRole(id)
+    await get().loadRoles()
+    return r
+  },
+
+  duplicateRole: async (id) => {
+    const r = await window.api.duplicateRole(id)
+    await get().loadRoles()
     return r
   }
 }))

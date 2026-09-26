@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { app } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { resolveClaudeBinary } from './claude-bin'
 
 /**
  * 调用本机已安装的 Claude Code CLI 对文档做语言润色。
@@ -77,69 +78,6 @@ export interface PolishLog {
 }
 
 export type LogFn = (log: PolishLog) => void
-
-/** 常见安装位置，用于 PATH 里找不到 claude 时兜底 */
-function candidatePaths(): string[] {
-  const home = app.getPath('home')
-  const names = process.platform === 'win32' ? ['claude.exe', 'claude.cmd'] : ['claude']
-  const dirs = [
-    path.join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages'),
-    path.join(home, '.local', 'bin'),
-    path.join(home, '.claude', 'local'),
-    path.join(home, 'AppData', 'Roaming', 'npm'),
-    '/usr/local/bin',
-    '/usr/bin',
-    '/opt/homebrew/bin'
-  ]
-  return dirs.flatMap((d) => names.map((n) => path.join(d, n)))
-}
-
-/**
- * 解析可执行文件路径。
- * Windows 上 `claude` 可能是 .exe，也可能（npm 全局安装时）是 .cmd，
- * 用 `where` / `which` 找出第一项。找不到就回退到常见安装目录。
- */
-function resolveClaudeBinary(): string | null {
-  // 优先跑 where/which，拿到 shell 视角下真正会执行的那个文件
-  try {
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
-    const cmd = process.platform === 'win32' ? 'where' : 'which'
-    const out = execFileSync(cmd, ['claude'], { encoding: 'utf8', timeout: 10000 })
-    const first = out
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)[0]
-    if (first && fs.existsSync(first)) return first
-  } catch {
-    // 忽略，走下面的兜底
-  }
-
-  // 兜底：WinGet 的 Packages 目录下带哈希后缀，需要递归找一层
-  if (process.platform === 'win32') {
-    try {
-      const base = path.join(app.getPath('home'), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages')
-      for (const entry of fs.readdirSync(base)) {
-        if (!entry.toLowerCase().includes('claude')) continue
-        const exe = path.join(base, entry, 'claude.exe')
-        if (fs.existsSync(exe)) return exe
-      }
-    } catch {
-      // 忽略
-    }
-  }
-
-  for (const p of candidatePaths()) {
-    if (fs.existsSync(p)) return p
-  }
-  return null
-}
-
-/** 检查本机 claude CLI 是否可用（供界面提示用） */
-export function checkClaudeAvailable(): { available: boolean; path?: string; version?: string } {
-  const bin = resolveClaudeBinary()
-  if (!bin) return { available: false }
-  return { available: true, path: bin }
-}
 
 const TIMEOUT_MS = 5 * 60 * 1000
 

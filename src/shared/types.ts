@@ -50,6 +50,8 @@ export interface Creation {
   filePath: string | null
   /** 实际使用的 git 分支名，如 v1.0 */
   branch: string | null
+  /** 默认绑定的编排角色 id；null = 未绑定，执行时再选 */
+  roleId: string | null
   createdAt: number
   updatedAt: number
 }
@@ -98,4 +100,86 @@ export interface PrepareProjectResult {
   branchAction?: 'created' | 'switched' | 'already'
   /** 面向用户的进展/错误说明 */
   message: string
+}
+
+// ===================== 编排 =====================
+
+/** 编排角色 */
+export interface Role {
+  id: string
+  /** 角色名，如「前端工程师」 */
+  name: string
+  /** 职位，如「高级前端开发」 */
+  title: string
+  /** 职责描述 */
+  duty: string
+  /** 该角色的提示词，执行时追加到 system prompt */
+  prompt: string
+  /** 内置角色不可删，可复制后修改 */
+  builtin: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface RoleInput {
+  id?: string
+  name: string
+  title: string
+  duty: string
+  prompt: string
+}
+
+/** 一次编排执行的日志条目 */
+export interface RunLogEntry {
+  kind: 'info' | 'cmd' | 'out' | 'err' | 'done'
+  text: string
+  at: number
+}
+
+/** 一次编排执行的元信息（会写进文档的执行记录） */
+export interface RunMeta {
+  roleId: string
+  roleName: string
+  roleTitle: string
+  /** 执行时所在分支 */
+  branch: string
+  status: 'running' | 'ok' | 'failed' | 'cancelled'
+  startedAt: number
+  endedAt: number | null
+  /** 受影响的文件（含新增） */
+  changedFiles: string[]
+  /** 人类可读的改动摘要 */
+  changeSummary: string
+  /** 执行前的 git HEAD，便于定位与回滚 */
+  headBefore: string
+  /** AI 的最终输出 */
+  resultText: string
+  error?: string
+}
+
+/** 执行记录（持久化） */
+export interface RunRecord {
+  id: string
+  creationId: string
+  roleId: string
+  roleName: string
+  branch: string
+  status: RunMeta['status']
+  startedAt: number
+  endedAt: number | null
+  changedFiles: string[]
+  changeSummary: string
+  headBefore: string
+  resultText: string
+  log: RunLogEntry[]
+  error?: string
+}
+
+export interface OrchestrateResult {
+  ok: boolean
+  meta?: RunMeta
+  stdout?: string
+  error?: string
+  startedAt: number
+  endedAt: number
 }
