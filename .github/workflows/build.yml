@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 打包 ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响其他平台继续产出
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: ubuntu-latest
+            name: Linux
+          - os: macos-latest
+            name: macOS
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 编译 main / preload / renderer
+        run: npm run build
+
+      - name: 打包（Windows：NSIS 安装包 + 免安装 zip）
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: 打包（Linux：AppImage + deb）
+        if: runner.os == 'Linux'
+        run: npx electron-builder --linux --x64 --publish never
+
+      - name: 打包（macOS：dmg + zip，x64 + arm64）
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac --x64 --arm64 --publish never
+
+      # 历史故障：并发打包曾产出过 189KB 的空壳安装包（载荷没嵌进去）。
+      # 这里卡一道体积下限，让这种情况直接红掉而不是发出一个装不上的包。
+      - name: 校验安装包体积
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release/*.exe | Select-Object -First 1
+          if (-not $exe) { throw 'release/ 下没有找到安装包 exe' }
+          $mb = [math]::Round($exe.Length / 1MB, 1)
+          Write-Host "$($exe.Name) = $mb MB"
+          if ($exe.Length -lt 20MB) {
+            throw "安装包只有 $mb MB，疑似空壳（载荷未嵌入），构建失败"
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyCode-${{ matrix.name }}
+          path: |
+            release/*.exe
+            release/*.zip
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+          # 没有产物 = 打包静默失败，直接报错
+          if-no-files-found: error
+          retention-days: 14
+
+  # 打 tag（v*）时，把三个平台的产物汇总挂到 GitHub Release 上
+  release:
+    name: 发布 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载全部产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 创建 Release 并上传安装包
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
