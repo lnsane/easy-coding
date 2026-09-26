@@ -3,7 +3,15 @@
   "version": "0.2.0",
   "private": true,
   "description": "easyCode - AI 协作与编排桌面应用",
-  "author": "lnsane",
+  "author": {
+    "name": "lnsane",
+    "email": "1137738840@qq.com"
+  },
+  "homepage": "https://github.com/lnsane/easy-coding",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lnsane/easy-coding.git"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
