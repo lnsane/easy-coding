@@ -1,10 +1,9 @@
 import { useEffect } from 'react'
 import { useConfigStore } from './store'
-import SetupPage from './pages/SetupPage'
 import MainPage from './pages/MainPage'
 
 export default function App(): React.JSX.Element {
-  const { loaded, activeConfig, load } = useConfigStore()
+  const { loaded, load } = useConfigStore()
 
   useEffect(() => {
     void load()
@@ -18,10 +17,6 @@ export default function App(): React.JSX.Element {
     )
   }
 
-  // 首次启动：没有任何激活配置 → 进入 AI 配置引导
-  if (!activeConfig) {
-    return <SetupPage />
-  }
-
+  // 直接进入主页面；尚未配置 AI 时，用右上角按钮打开配置管理
   return <MainPage />
 }

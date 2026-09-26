@@ -9,3 +9,192 @@ body {
   font-family:
     "Inter", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
 }
+
+/* ------------------------------------------------------------------
+   markdown 预览样式
+   Tailwind 的 preflight 会把 h1/p/ul 等元素样式全部清掉，
+   所以渲染出来的 markdown 必须自己补一套，否则就是没有层次的纯文本。
+   ------------------------------------------------------------------ */
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.4em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-zinc-100);
+}
+
+.markdown-body h1 {
+  font-size: 1.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--color-zinc-800);
+}
+
+.markdown-body h2 {
+  font-size: 1.35em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--color-zinc-800);
+}
+
+.markdown-body h3 { font-size: 1.15em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5,
+.markdown-body h6 { font-size: 0.9em; color: var(--color-zinc-400); }
+
+.markdown-body p {
+  margin: 0.75em 0;
+  line-height: 1.75;
+}
+
+.markdown-body a {
+  color: var(--color-indigo-400);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-body a:hover {
+  color: var(--color-indigo-300);
+}
+
+.markdown-body strong { font-weight: 600; color: var(--color-zinc-50); }
+.markdown-body em { font-style: italic; }
+.markdown-body del { text-decoration: line-through; color: var(--color-zinc-500); }
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.75em 0;
+  padding-left: 1.6em;
+}
+
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+.markdown-body li { margin: 0.3em 0; line-height: 1.7; }
+.markdown-body li > ul,
+.markdown-body li > ol { margin: 0.3em 0; }
+
+.markdown-body blockquote {
+  margin: 0.9em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--color-zinc-700);
+  color: var(--color-zinc-400);
+}
+
+.markdown-body code {
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+  background: var(--color-zinc-800);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.markdown-body pre {
+  margin: 0.9em 0;
+  padding: 0.9em 1em;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-zinc-800);
+  background: var(--color-zinc-900);
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 0.85em;
+  line-height: 1.65;
+}
+
+.markdown-body table {
+  margin: 0.9em 0;
+  border-collapse: collapse;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 0.45em 0.9em;
+  border: 1px solid var(--color-zinc-700);
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--color-zinc-800);
+  font-weight: 600;
+}
+
+.markdown-body hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid var(--color-zinc-800);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+}
+
+/* ------------------------------------------------------------------
+   CodeMirror 编辑区
+   显式指定深色配色，而不是依赖主题注入的样式：一旦主题没生效或默认值变化，
+   会出现「白底 + 继承 body 的近白文字」这种白底白字、内容不可见的情况。
+   这里兜底，保证任何情况下编辑器都是可读的。
+   ------------------------------------------------------------------ */
+.cm-editor {
+  height: 100%;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 13px;
+  /* 深色底：比 -900 稍亮一点，和外部容器区分开 */
+  background-color: var(--color-zinc-950);
+  color: var(--color-zinc-200);
+}
+
+.cm-editor .cm-content {
+  color: var(--color-zinc-200);
+  caret-color: var(--color-indigo-400);
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-scroller {
+  font-family: inherit;
+  /* 覆盖 CodeMirror 浅色主题给 gutter 的灰白底 */
+  background-color: transparent !important;
+}
+
+/* 行号栏 */
+.cm-editor .cm-gutters {
+  background-color: var(--color-zinc-900) !important;
+  color: var(--color-zinc-500);
+  border-right: 1px solid var(--color-zinc-800);
+}
+
+.cm-editor .cm-activeLineGutter {
+  background-color: var(--color-zinc-800) !important;
+  color: var(--color-zinc-300);
+}
+
+.cm-editor .cm-activeLine {
+  background-color: oklch(27.4% 0.006 286.033 / 0.35) !important;
+}
+
+/* 选区与光标 */
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--color-indigo-400) !important;
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background-color: oklch(48% 0.14 277 / 0.45) !important;
+}

@@ -1,7 +1,28 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path from 'node:path'
-import { initDb, listConfigs, getActiveConfig, saveConfig, deleteConfig, setActiveConfig } from './db'
-import type { AIConfigInput } from '../shared/types'
+import {
+  initDb,
+  listConfigs,
+  getActiveConfig,
+  saveConfig,
+  deleteConfig,
+  setActiveConfig,
+  listCreations,
+  getCreation,
+  createCreation,
+  updateCreation,
+  deleteCreation,
+  listCreationVersions,
+  setCreationFile,
+  listProjects,
+  getProject,
+  upsertProject,
+  deleteProject
+} from './db'
+import type { AIConfigInput, CreationInput, CreationUpdate } from '../shared/types'
+import { checkClaudeAvailable, polishDocument } from './polish'
+import { prepareProject, pickDirectory, projectBranchOf } from './projects'
+import { writeDocFile, writeFileAt, readFileAt, validateProjectDir } from './files'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -37,6 +58,50 @@ function registerIpc(): void {
   ipcMain.handle('ai-config:save', (_e, input: AIConfigInput) => saveConfig(input))
   ipcMain.handle('ai-config:delete', (_e, id: string) => deleteConfig(id))
   ipcMain.handle('ai-config:set-active', (_e, id: string) => setActiveConfig(id))
+
+  ipcMain.handle('creation:list', () => listCreations())
+  ipcMain.handle('creation:get', (_e, id: string) => getCreation(id))
+  ipcMain.handle('creation:create', (_e, input: CreationInput) => createCreation(input))
+  ipcMain.handle('creation:update', (_e, id: string, patch: CreationUpdate) =>
+    updateCreation(id, patch)
+  )
+  ipcMain.handle('creation:delete', (_e, id: string) => deleteCreation(id))
+  ipcMain.handle('creation:versions', () => listCreationVersions())
+
+  ipcMain.handle('polish:available', () => checkClaudeAvailable())
+  ipcMain.handle('polish:run', (_e, content: string, cwd?: string | null) =>
+    polishDocument(content, cwd)
+  )
+
+  // ---------------- 项目与 git ----------------
+  ipcMain.handle('project:list', () => listProjects())
+  ipcMain.handle('project:get', (_e, id: string) => getProject(id))
+  ipcMain.handle('project:pick-dir', () => pickDirectory())
+  ipcMain.handle('project:prepare', (_e, input: Parameters<typeof prepareProject>[0]) =>
+    prepareProject(input)
+  )
+  ipcMain.handle('project:branch', (_e, id: string) => projectBranchOf(id))
+  ipcMain.handle('project:delete', (_e, id: string) => deleteProject(id))
+  ipcMain.handle('project:validate', (_e, dir: string) => validateProjectDir(dir))
+  ipcMain.handle(
+    'project:add-local',
+    (_e, input: { name: string; path: string; gitUrl?: string | null }) =>
+      upsertProject({ ...input, source: 'local' })
+  )
+
+  // ---------------- 文档文件 ----------------
+  ipcMain.handle('file:write-doc', (_e, projectPath: string, title: string, content: string) =>
+    writeDocFile(projectPath, title, content)
+  )
+  ipcMain.handle('file:write-at', (_e, projectPath: string, rel: string, content: string) =>
+    writeFileAt(projectPath, rel, content)
+  )
+  ipcMain.handle('file:read-at', (_e, projectPath: string, rel: string) =>
+    readFileAt(projectPath, rel)
+  )
+  ipcMain.handle('creation:set-file', (_e, id: string, filePath: string, branch: string | null) =>
+    setCreationFile(id, filePath, branch)
+  )
 }
 
 app.whenReady().then(() => {
