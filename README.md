@@ -12,16 +12,34 @@ AI 协作与编排桌面应用（Electron + React + TypeScript + SQLite）。
 
 ## 功能
 
-- 首次启动进入 **AI 配置引导**（provider 预设：OpenAI / Anthropic / DeepSeek / Gemini / 自定义 OpenAI 兼容）
-- 配置保存到 `~/.easyCode/config.db`（SQLite），支持**多套配置**，一套为当前激活
-- 配置完成后进入**主页面**：左上角「协作」「编排」两个 tab（当前为占位页）
-- 主页面右上角可打开**配置管理**：新增 / 编辑 / 删除 / 切换激活配置
+启动后**直接进入主页面**，左上角「协作」「编排」两个 tab。
+
+### AI 配置
+
+主页面右上角可打开**配置管理**：新增 / 编辑 / 删除 / 切换激活配置。内置 23 个 provider 预设（OpenAI / Anthropic / DeepSeek / Kimi / 通义 / 智谱 / Gemini 等 + 自定义 OpenAI 兼容），配置保存在 `~/.easyCode/config.db`（SQLite），支持多套配置、一套为当前激活。
+
+### 协作 · 创作
+
+「协作」tab 是 markdown 需求文档工作区：
+
+- **新增创作**：选择项目（git 地址 / 本地项目 / 用过的项目）+ 版本号 + 需求标题
+- **git 集成**：git 地址自动 clone；按版本号创建分支（`1.0` → `v1.0`），**已存在则切换过去**；文档写入项目的 `doc/` 目录
+  - 工作区有未提交改动时会**拒绝切换分支**，绝不自动 stash 或覆盖你的改动
+  - 应用只创建/切换分支、写文件，**不做 commit/push**
+- **markdown 编辑器**：左侧源码（CodeMirror 6）+ 右侧实时预览，顶部工具栏（加粗/斜体/标题/列表/引用/表格/链接/图片/代码块/分割线），800ms 防抖自动保存
+- **✨ 润色**：调用本机 **Claude Code CLI** 对当前文档做语言润色，结果可**逐处确认或撤回**；关联项目时会切到项目目录执行（能读项目 `CLAUDE.md` 上下文），但禁用全部工具、不改任何文件
+
+> 润色需要本机已安装 [Claude Code](https://claude.com/claude-code)（`claude` CLI）。
+
+「编排」tab 为占位页。
 
 ## 开发
 
 ```bash
 npm install        # 安装依赖
 npm run dev        # 启动开发模式（热更新）
+npm test           # 跑测试（250 项断言）
+npm run typecheck  # 类型检查
 ```
 
 ## 编译并启动
