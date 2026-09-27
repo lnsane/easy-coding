@@ -5,15 +5,15 @@ import { resolveClaudeBinary } from './claude-bin'
 import type { PolishLog } from './polish'
 import { PLAN_SYSTEM_PROMPT } from '../shared/prompts'
 import { cleanCliOutput } from './cli-output'
+import { killTree } from './kill-tree'
 
 /**
  * 生成开发计划文档。
  *
  * 与润色的区别：润色是「改写现有文档」，这里是「读需求 → 产出一份新的计划文档」。
- * 因此用只读模式（`--tools ""` + stdin 管道）：它读不到也改不了磁盘，
- * 计划内容由它打印到 stdout，再由应用负责落盘。
  *
- * 这样设计的好处是**它只能产出文本**，不可能自己去写文件——落盘由应用掌控，
+ * 用**只读检索模式**（`Read,Glob,Grep`）：它能先看项目里已有什么再写计划，
+ * 但改不了任何文件。计划内容由它打印到 stdout，再由应用负责落盘——
  * 文件名、路径、重名处理都在应用侧统一管。
  */
 
@@ -41,7 +41,17 @@ export type PlanLogFn = (log: PolishLog) => void
 const ALLOWED_TOOLS = 'Read,Glob,Grep'
 
 
-const TIMEOUT_MS = 8 * 60 * 1000
+/**
+ * 超时上限：5 小时。
+ *
+ * 演进：8 分钟 → 20 分钟 → 5 小时。8 分钟那次实测被中止（日志显示
+ * 480.0s 超时，且当时仍在正常工作）。本机 Claude Code 被路由到国产模型，
+ * 速度比官方模型慢不少，而计划生成是「读较多文件 + 产出长文档」，耗时天然长。
+ *
+ * 定得这么宽是有意的：宁可让用户自己关掉面板，也不要中途把还在干的活掐掉。
+ * 目前没有「中止」按钮——若需要中途停，可以后续补（killTree 已就绪）。
+ */
+const TIMEOUT_MS = 5 * 60 * 60 * 1000
 
 /**
  * 依据需求文档内容生成开发计划。
@@ -134,13 +144,15 @@ function generatePlanOnce(
     }
 
     const timer = setTimeout(() => {
-      try {
-        child.kill()
-      } catch {
-        // 忽略
-      }
+      // 必须杀整棵进程树：child.kill() 只杀直接子进程，claude.exe 会变孤儿
+      // 继续跑（实测残留，继续消耗 token）
+      killTree(child.pid)
       log('err', `超时中止（${elapsed()}）`)
-      finish({ ok: false, text: '', error: '生成超时（8 分钟），已中止。请重试。' })
+      finish({
+        ok: false,
+        text: '',
+        error: `生成超时（${Math.round(TIMEOUT_MS / 60000)} 分钟），已中止。请重试。`
+      })
     }, TIMEOUT_MS)
 
     child.stdout?.on('data', (d: Buffer) => {
@@ -158,6 +170,11 @@ function generatePlanOnce(
       finish({ ok: false, text: '', error: `无法执行 Claude Code：${err.message}` })
     })
     child.on('close', (code) => {
+      // 已被超时/中止处理过就不再重复报告。
+      // 否则 killTree 之后 close 仍会触发，日志里会多出一条「退出码 null」，
+      // 看起来像发生了两次失败（实测出现过）。
+      if (settled) return
+
       const text = stdout.trim()
       if (code !== 0) {
         const detail = stderr.trim().split(/\r?\n/).filter(Boolean).slice(-3).join('\n')
@@ -215,10 +232,10 @@ function generatePlanOnce(
 /**
  * 判断输出是否是「工具调用残留」。
  *
- * 实测偶发：模型会尝试调用 Bash/Read 去查看项目（`--tools ""` 已禁用工具，
- * 调用不会执行），但会在 stdout 里留下形如
+ * 实测偶发：模型会尝试调用白名单外的工具（如 Bash），或在没有可用工具时
+ * 仍输出工具调用格式，在 stdout 里留下形如
  * `<｜｜DSML｜｜ invoke name="Bash">` 的畸形标记。
- * 这类输出不是计划正文，必须识别出来而不是当成功。
+ * 这类输出不是计划正文，必须识别出来而不是当成功写进文档。
  */
 function looksLikeToolCall(text: string): boolean {
   if (/DSML|invoke name=|antml:invoke/i.test(text)) return true

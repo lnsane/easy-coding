@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { resolveClaudeBinary } from './claude-bin'
 import { cleanCliOutput } from './cli-output'
+import { killTree } from './kill-tree'
 
 /**
  * 调用本机已安装的 Claude Code CLI 对文档做语言润色。
@@ -306,13 +307,15 @@ export function polishDocument(
     }
 
     const timer = setTimeout(() => {
-      try {
-        child.kill()
-      } catch {
-        // 忽略
-      }
+      // 必须杀整棵进程树：child.kill() 只杀直接子进程，claude.exe 会变孤儿
+      // 继续跑（实测残留，继续消耗 token）
+      killTree(child.pid)
       log({ kind: 'err', text: `超时中止（${elapsed()}）`, at: Date.now() })
-      finish({ ok: false, text: content, error: '润色超时（5 分钟），已中止。请重试或检查网络。' })
+      finish({
+        ok: false,
+        text: content,
+        error: `润色超时（${Math.round(TIMEOUT_MS / 60000)} 分钟），已中止。请重试或检查网络。`
+      })
     }, TIMEOUT_MS)
 
     child.stdout?.on('data', (d: Buffer) => {
@@ -333,6 +336,10 @@ export function polishDocument(
     })
 
     child.on('close', (code) => {
+      // 已被超时处理过就不再重复报告（killTree 之后 close 仍会触发，
+      // 否则日志里会多出一条「退出码 null」，像失败了两次）
+      if (settled) return
+
       const text = stdout.trim()
       if (code !== 0) {
         const detail = stderr.trim().split(/\r?\n/).filter(Boolean).slice(-3).join('\n')

@@ -61,6 +61,10 @@ export function runGit(args: string[], cwd?: string, timeout = DEFAULT_TIMEOUT):
     }
 
     const timer = setTimeout(() => {
+      // git 是单进程；交互式助手（凭据管理器 / pager）已由 gitEnv() 里的
+      // GIT_TERMINAL_PROMPT=0 与 GCM_INTERACTIVE=never 禁掉，故此处 kill 直接子进程即可。
+      // 不引入共享 killTree：那会让 test-git.mjs 这类纯 Node 跑 .ts 的测试
+      // 因跨模块 import 解析而崩溃（实测踩到）。
       try {
         child.kill()
       } catch {

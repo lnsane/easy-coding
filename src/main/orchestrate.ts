@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { runGit, branchNameForVersion, ensureBranch, currentBranch } from './git'
 import { resolveClaudeBinary } from './claude-bin'
+import { killTree } from './kill-tree'
 import type { OrchestrateResult, RunMeta, RunLogEntry } from '../shared/types'
 
 export type { RunLogEntry }
@@ -81,30 +82,6 @@ function buildSystemPrompt(role: {
     parts.push('', '## 角色专属要求', role.prompt.trim())
   }
   return parts.filter((p) => p !== undefined).join('\n')
-}
-
-/** 杀整棵进程树 */
-function killTree(pid: number | undefined): void {
-  if (!pid) return
-  if (process.platform === 'win32') {
-    // Windows 上 child.kill() 只杀直接子进程，claude.exe 会变成孤儿继续跑（实测）
-    try {
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' })
-    } catch {
-      // 进程可能已退出，忽略
-    }
-  } else {
-    try {
-      // 负号 = 进程组，覆盖 claude 派生的子进程
-      process.kill(-pid, 'SIGKILL')
-    } catch {
-      try {
-        process.kill(pid, 'SIGKILL')
-      } catch {
-        // 忽略
-      }
-    }
-  }
 }
 
 export interface OrchestrateInput {
