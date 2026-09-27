@@ -109,6 +109,22 @@ export interface EasyCodeApi {
   abortOrchestrate: (runId: string) => Promise<boolean>
   /** 订阅编排执行日志；返回取消订阅函数 */
   onOrchestrateLog: (cb: (runId: string, entry: RunLogEntry) => void) => () => void
+
+  // ---------------- 生成开发计划 ----------------
+  /**
+   * 依据需求文档生成开发计划。只读模式：内容经 stdin 送入，产出文本由应用落盘。
+   * @param runId 本次生成标识，用于接收过程日志
+   * @param title 需求标题
+   * @param cwd   项目根目录（用于加载 CLAUDE.md 等上下文）
+   */
+  generatePlan: (
+    runId: string,
+    content: string,
+    title: string,
+    cwd?: string | null
+  ) => Promise<{ ok: boolean; text: string; error?: string }>
+  /** 订阅生成过程日志；返回取消订阅函数 */
+  onPlanLog: (cb: (runId: string, entry: RunLogEntry) => void) => () => void
 }
 
 const api: EasyCodeApi = {
@@ -169,6 +185,14 @@ const api: EasyCodeApi = {
     const listener = (_e: unknown, runId: string, entry: RunLogEntry): void => cb(runId, entry)
     ipcRenderer.on('orchestrate:log', listener)
     return () => ipcRenderer.removeListener('orchestrate:log', listener)
+  },
+
+  generatePlan: (runId, content, title, cwd) =>
+    ipcRenderer.invoke('plan:generate', runId, content, title, cwd ?? null),
+  onPlanLog: (cb) => {
+    const listener = (_e: unknown, runId: string, entry: RunLogEntry): void => cb(runId, entry)
+    ipcRenderer.on('plan:log', listener)
+    return () => ipcRenderer.removeListener('plan:log', listener)
   }
 }
 

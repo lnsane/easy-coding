@@ -33,6 +33,7 @@ import { polishDocument } from './polish'
 import { checkClaudeAvailable } from './claude-bin'
 import { prepareProject, pickDirectory, projectBranchOf } from './projects'
 import { orchestrate } from './orchestrate'
+import { generatePlan } from './plan'
 import { writeDocFile, writeFileAt, readFileAt, validateProjectDir } from './files'
 
 function createWindow(): void {
@@ -173,6 +174,16 @@ function registerIpc(): void {
     }
     return false
   })
+
+  // ---------------- 生成开发计划 ----------------
+  ipcMain.handle(
+    'plan:generate',
+    (e, runId: string, content: string, title: string, cwd?: string | null) => {
+      return generatePlan(content, title, cwd, (entry) => {
+        if (!e.sender.isDestroyed()) e.sender.send('plan:log', runId, entry)
+      })
+    }
+  )
 }
 
 /** 正在执行的编排任务：runId → 中止信号 */

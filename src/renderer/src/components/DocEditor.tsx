@@ -11,6 +11,7 @@ import MarkdownToolbar from './MarkdownToolbar'
 import PolishDialog from './PolishDialog'
 import RunProgress, { type PolishLogEntry } from './RunProgress'
 import RunConfirmDialog from './RunConfirmDialog'
+import PlanDialog from './PlanDialog'
 import { buildRunSection } from '../../../shared/run-section'
 import { applyAction, diffRange } from '../lib/markdown-actions'
 import type { Action } from '../lib/markdown-actions'
@@ -269,8 +270,24 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
         setPhase('失败')
         return
       }
+
+      // 关联项目时是「直写模式」：Claude Code 已把结果写回项目里的文件，
+      // stdout 只有一句摘要。因此这里要**重新读回文件**拿真实结果，
+      // 再把「改动前 vs 改动后」交给确认弹窗。
+      const directWrite = Boolean(cwd && docRel)
+      if (directWrite) {
+        const onDisk = await window.api.readFileAt(cwd!, docRel!)
+        if (typeof onDisk === 'string' && onDisk.trim() && onDisk !== source) {
+          setPhase('已完成，请确认改动')
+          setPending({ original: source, polished: onDisk })
+        } else {
+          // 文件与原文一致（或读不回来）：说明没有改动，不必弹确认框
+          setPhase('已完成：文档无需修改')
+        }
+        return
+      }
+
       setPhase('已完成，请确认改动')
-      // 结果先不落盘，交给用户确认或撤回
       setPending({ original: source, polished: r.text })
     } catch (err) {
       setPolishError(String(err))
@@ -307,6 +324,7 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
 
   const roles = useConfigStore((s) => s.roles)
   const loadRoles = useConfigStore((s) => s.loadRoles)
+  const setCreationRole = useConfigStore((s) => s.setCreationRole)
   const [orchestrating, setOrchestrating] = useState(false)
   const [showRunConfirm, setShowRunConfirm] = useState(false)
   const [orchestrateError, setOrchestrateError] = useState('')
@@ -316,6 +334,12 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
   const [showRunProgress, setShowRunProgress] = useState(false)
   /** 当前编排执行的标识，用于过滤日志与中止 */
   const orchRunIdRef = useRef('')
+  /**
+   * 与 runLogs 同步的 ref。
+   * startOrchestrate 是 useCallback，闭包里的 runLogs 是旧的；
+   * 落执行记录时必须读这个 ref，否则 log 恒为空或错位。
+   */
+  const orchLogsRef = useRef<PolishLogEntry[]>([])
 
   useEffect(() => {
     void loadRoles()
@@ -325,7 +349,14 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
   useEffect(() => {
     const off = window.api.onOrchestrateLog((runId: string, entry: PolishLogEntry) => {
       if (runId !== orchRunIdRef.current) return
-      setRunLogs((prev) => [...prev, entry])
+      setRunLogs((prev) => {
+        const next = [...prev, entry]
+        // 同时写进 ref：startOrchestrate 是 useCallback，其闭包里的 runLogs
+        // 是「回调创建那一刻」的旧数组，执行期间累积的日志进不去，
+        // 会导致落库的 log 恒为空或错位（实测确认）。ref 则始终是最新的。
+        orchLogsRef.current = next
+        return next
+      })
     })
     return off
   }, [])
@@ -340,12 +371,21 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
       setShowRunConfirm(false)
       setOrchestrateError('')
 
+      // 记住本次选用的角色，作为这份文档下次执行的默认值。
+      // 这也把先前「只声明未调用」的 setCreationRole 链路接上了。
+      if (creation.roleId !== role.id) {
+        void setCreationRole(creation.id, role.id).catch(() => {
+          // 记默认值失败不影响本次执行
+        })
+      }
+
       // 先把编辑器里的最新内容落盘——AI 要读的是磁盘上的最新需求，不能是旧文件
       await flush()
 
       const runId = `orch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       orchRunIdRef.current = runId
       setRunLogs([])
+      orchLogsRef.current = []
       setRunSummary('')
       setRunPhase('准备中…')
       setShowRunProgress(true)
@@ -398,7 +438,8 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
               changeSummary: meta.changeSummary,
               headBefore: meta.headBefore,
               resultText: meta.resultText,
-              log: runLogs,
+              // 用 ref 取「执行期间累积的完整日志」，闭包里的 runLogs 是旧值
+              log: orchLogsRef.current,
               error: meta.error
             })
           } catch {
@@ -406,9 +447,15 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
           }
         }
 
-        if (!r.ok) setOrchestrateError(r.error ?? '执行未成功')
-        else setRunPhase('已完成')
-        if (r.meta?.status === 'cancelled') setRunPhase('已中止')
+        // 用户主动中止不是失败：orchestrate 在中止时也返回 ok:false，
+        // 若一律弹红色错误横幅，会让人以为出错了。先判断中止，再判失败。
+        if (r.meta?.status === 'cancelled') {
+          setRunPhase('已中止')
+        } else if (!r.ok) {
+          setOrchestrateError(r.error ?? '执行未成功')
+        } else {
+          setRunPhase('已完成')
+        }
       } catch (err) {
         setOrchestrateError(String(err))
         setRunPhase('失败')
@@ -416,7 +463,7 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
         setOrchestrating(false)
       }
     },
-    [project, creation.filePath, creation.version, creation.id, content, title, flush, runLogs]
+    [project, creation.filePath, creation.version, creation.id, creation.roleId, content, title, flush, runLogs, setCreationRole]
   )
 
   /** 中止：通知主进程杀掉进程树 */
@@ -425,6 +472,87 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
     if (id) void window.api.abortOrchestrate(id)
     setRunPhase('正在中止…')
   }, [])
+
+  // ------------------------- 生成开发计划 -------------------------
+
+  const createCreation = useConfigStore((s) => s.createCreation)
+  const [showPlanDialog, setShowPlanDialog] = useState(false)
+  const [planning, setPlanning] = useState(false)
+  const [planError, setPlanError] = useState('')
+  const [planLogs, setPlanLogs] = useState<PolishLogEntry[]>([])
+  const [planPhase, setPlanPhase] = useState('')
+  const [showPlanProgress, setShowPlanProgress] = useState(false)
+  const planRunIdRef = useRef('')
+
+  useEffect(() => {
+    const off = window.api.onPlanLog((runId: string, entry: PolishLogEntry) => {
+      if (runId !== planRunIdRef.current) return
+      setPlanLogs((prev) => [...prev, entry])
+    })
+    return off
+  }, [])
+
+  const startPlan = useCallback(
+    async (planName: string): Promise<void> => {
+      setShowPlanDialog(false)
+      setPlanError('')
+
+      // 先把编辑器里的最新内容落盘，AI 读到的是最新需求
+      await flush()
+
+      const v = view()
+      const source = v ? v.state.doc.toString() : content
+      if (!source.trim()) {
+        setPlanError('需求文档内容为空，无法生成开发计划。')
+        return
+      }
+
+      const runId = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      planRunIdRef.current = runId
+      setPlanLogs([])
+      setPlanPhase('生成中…')
+      setShowPlanProgress(true)
+      setPlanning(true)
+
+      try {
+        const r = await window.api.generatePlan(
+          runId,
+          source,
+          creation.title,
+          project?.path ?? null
+        )
+        if (!r.ok || !r.text.trim()) {
+          setPlanError(r.error ?? '生成失败')
+          setPlanPhase('失败')
+          return
+        }
+
+        // 落盘：关联项目时写入项目 doc/ 下并登记为新创作
+        if (project) {
+          setPlanPhase('正在写入文档…')
+          const rel = await window.api.writeDocFile(project.path, planName, r.text)
+          const created = await createCreation({
+            version: creation.version,
+            title: planName,
+            projectId: project.id,
+            branch: creation.branch
+          })
+          await window.api.setCreationFile(created.id, rel, creation.branch)
+          setPlanPhase(`已生成：${rel}`)
+        } else {
+          // 未关联项目：不落盘，只把结果留在日志里提示用户
+          setPlanPhase('已生成（未关联项目，未落盘）')
+          setPlanError('当前文档未关联项目，计划已生成但未保存到文件。请先关联项目后重试。')
+        }
+      } catch (err) {
+        setPlanError(String(err))
+        setPlanPhase('失败')
+      } finally {
+        setPlanning(false)
+      }
+    },
+    [content, creation.title, creation.version, creation.branch, flush, project, createCreation]
+  )
 
   const html = useMemo(() => renderMarkdown(content), [content])
 
@@ -475,11 +603,29 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
           )}
         </button>
 
+        {/* 生成开发计划：依据本文档产出一份可执行的计划文档 */}
+        <button
+          type="button"
+          onClick={() => setShowPlanDialog(true)}
+          disabled={planning || polishing || orchestrating}
+          title="依据当前需求文档生成一份开发计划（只读模式，不改任何文件）"
+          className="flex items-center gap-1 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 transition hover:border-sky-500 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {planning ? (
+            <>
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border border-zinc-500 border-t-transparent" />
+              生成中…
+            </>
+          ) : (
+            <>📋 生成开发计划</>
+          )}
+        </button>
+
         {/* 执行编排任务：以本文档为需求说明，让 AI 在项目里写代码 */}
         <button
           type="button"
           onClick={() => setShowRunConfirm(true)}
-          disabled={orchestrating || polishing}
+          disabled={orchestrating || polishing || planning}
           title={
             project
               ? '以本文档为需求，让 AI 在这个项目里实现代码'
@@ -635,6 +781,42 @@ export default function DocEditor({ creation, onBack }: Props): React.JSX.Elemen
           <button
             type="button"
             onClick={() => setOrchestrateError('')}
+            className="ml-auto shrink-0 text-xs text-red-300/70 hover:text-red-200"
+          >
+            关闭
+          </button>
+        </div>
+      )}
+
+      {/* 生成开发计划：确认文件名 */}
+      {showPlanDialog && (
+        <PlanDialog
+          requirementTitle={creation.title}
+          projectName={project?.name ?? null}
+          projectPath={project?.path ?? null}
+          branch={creation.branch}
+          onCancel={() => setShowPlanDialog(false)}
+          onConfirm={(planName) => void startPlan(planName)}
+        />
+      )}
+
+      {/* 生成过程面板 */}
+      {showPlanProgress && (
+        <RunProgress
+          phase={planPhase}
+          logs={planLogs}
+          projectPath={project?.path ?? null}
+          running={planning}
+          onClose={() => setShowPlanProgress(false)}
+        />
+      )}
+
+      {planError && (
+        <div className="absolute inset-x-0 bottom-0 z-30 mx-4 mb-4 flex items-start gap-2 rounded-xl border border-red-900/60 bg-red-950/90 px-4 py-3">
+          <span className="text-xs text-red-200">{planError}</span>
+          <button
+            type="button"
+            onClick={() => setPlanError('')}
             className="ml-auto shrink-0 text-xs text-red-300/70 hover:text-red-200"
           >
             关闭

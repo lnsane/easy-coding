@@ -1,7 +1,7 @@
 /**
  * 润色「管道模式」验证（L12）。
  *
- * 需求：内容经 stdin 管道送入 Claude Code，不经 shell，不依赖 Read 工具。
+ * 需求：内容经 stdin 管道送入 Claude Code，不经 shell，不依赖任何工具。
  *
  * 必须证明：
  *  1. 管道能正确送达内容（含 shell 特殊字符也不会被解释）
@@ -24,18 +24,36 @@ function check(name, actual, expected) {
 
 const CLAUDE = execFileSync('where', ['claude'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim()
 
-/** 模拟主进程的调用方式：shell:false + stdin 管道 */
+const SYS = [
+  '你是一个文本润色器。只修正错别字、病句、标点与不通顺的表达，保持 markdown 结构与原意不变。',
+  '只输出润色后的文档全文，不要任何解释、前言、后记，也不要用代码围栏包裹。'
+].join('\n')
+
+/**
+ * 模拟主进程的调用方式：shell:false + stdin 管道。
+ *
+ * 失败时抛出带上下文的错误，而不是让 execFileSync 的原始异常冒上来——
+ * 这个 CLI 偶发会以非 0 退出（实测过），把 stderr 带出来才能定位原因。
+ */
 function pipePolish(content, cwd, timeoutMs = 200_000) {
-  const sys =
-    '你是一个文本润色器。只修正错别字、病句、标点与不通顺的表达，保持 markdown 结构与原意不变。\n' +
-    '只输出润色后的文档全文，不要任何解释、前言、后记，也不要用代码围栏包裹。'
-  return execFileSync(CLAUDE, ['-p', '--tools', '', '--append-system-prompt', sys], {
-    cwd,
-    input: content,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
+  try {
+    return execFileSync(CLAUDE, ['-p', '--tools', '', '--append-system-prompt', SYS], {
+      cwd,
+      input: content,
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+  } catch (err) {
+    const stderr = String(err.stderr ?? '').trim()
+    const stdout = String(err.stdout ?? '').trim()
+    const timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM'
+    throw new Error(
+      `CLI 调用失败: code=${err.status} timedOut=${timedOut}\n` +
+        `  stderr: ${stderr.slice(0, 300)}\n` +
+        `  stdout: ${stdout.slice(0, 200)}`
+    )
+  }
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'easycode-pipe-'))
@@ -90,11 +108,13 @@ const main = () => {
 
   // ---------- 4. 长文档（验证管道不受命令行长度限制） ----------
   {
-    // 约 200KB，远超 Windows 32KB 命令行上限；若走命令行参数必然失败
-    const long = ('这是一段需要润色的文字，带有错别子。\n\n').repeat(6000)
+    // 目标只是证明「远超 Windows 约 32KB 的命令行上限」。
+    // 曾用 6000 段（约 336KB），但实测会超过 400s 超时且 stdout 为空——
+    // 那是本机路由到的模型太慢，不是管道的问题（诊断信息已能区分 timedOut）。
+    // 改用 1500 段（约 84KB）：仍远超 32KB 上限，且能在超时内返回。
+    const long = ('这是一段需要润色的文字，带有错别子。\n\n').repeat(1500)
     // 按字节算，确认远超 Windows 约 32KB 的命令行上限
-    check('长文档字节数远超命令行上限', Buffer.byteLength(long, 'utf8') > 200_000, true)
-    // 长文档返回内容多、耗时也更长，单独给足超时（曾因 200s 不够而失败）
+    check('长文档字节数远超命令行上限', Buffer.byteLength(long, 'utf8') > 80_000, true)
     const out = pipePolish(long, proj, 400_000)
     check('长文档管道送达成功', out.length > 1000, true)
     check('长文档润色生效（错别子→错别字）', out.includes('错别字'), true)

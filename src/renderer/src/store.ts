@@ -41,6 +41,8 @@ interface ConfigState {
   saveRole: (input: RoleInput) => Promise<Role>
   deleteRole: (id: string) => Promise<{ ok: boolean; error?: string }>
   duplicateRole: (id: string) => Promise<Role | null>
+  /** 设置某份文档默认绑定的角色（null = 解绑） */
+  setCreationRole: (creationId: string, roleId: string | null) => Promise<void>
 }
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
@@ -144,5 +146,16 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     const r = await window.api.duplicateRole(id)
     await get().loadRoles()
     return r
+  },
+
+  /**
+   * 把某份文档默认绑定的角色设为 roleId（null = 解绑）。
+   *
+   * 此前 main/preload 侧这条链路都已就绪，但渲染层从未调用，
+   * 是一段死代码——执行弹窗的默认角色因此永远为空。
+   */
+  setCreationRole: async (creationId, roleId) => {
+    await window.api.setCreationRole(creationId, roleId)
+    await get().loadCreations()
   }
 }))

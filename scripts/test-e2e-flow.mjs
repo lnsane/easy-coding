@@ -37,7 +37,7 @@ try {
   /* 忽略 */
 }
 fs.writeFileSync(path.join(proj, 'README.md'), '# proj\n')
-// 分���上预先存在的文档
+// 分支上预先存在的文档
 fs.writeFileSync(path.join(proj, 'doc', '登录需求.md'), '# 已有的登录需求\n\n分支上本来就有的文档。\n')
 g(['add', '.'])
 g(['commit', '-q', '-m', 'init'])

@@ -110,7 +110,7 @@ const allChanged = (original, polished) =>
   check('全选 → 逐字节等于润色稿', compose(original, polished, allChanged(original, polished)), polished)
 }
 
-// 单换行排版必须原���保留（这是拼接最容易出错的地方）
+// 单换行排版必须原样保留（这是拼接最容易出错的地方）
 {
   const original = '# 标题\n第一行\n第二行\n\n下一段'
   const polished = '# 标题\n第一行改了\n第二行\n\n下一段'

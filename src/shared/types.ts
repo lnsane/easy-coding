@@ -63,6 +63,8 @@ export interface CreationInput {
   projectId?: string | null
   filePath?: string | null
   branch?: string | null
+  /** 默认绑定的编排角色（可选；不传则不绑定） */
+  roleId?: string | null
 }
 
 /** 更新创作：局部更新，未提供的字段不变 */

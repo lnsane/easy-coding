@@ -317,8 +317,8 @@ export function createCreation(input: CreationInput): Creation {
   const now = Date.now()
   const id = crypto.randomUUID()
   d.prepare(
-    `INSERT INTO creations (id, version, title, content, project_id, file_path, branch, created_at, updated_at)
-     VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)`
+    `INSERT INTO creations (id, version, title, content, project_id, file_path, branch, role_id, created_at, updated_at)
+     VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.version,
@@ -326,6 +326,9 @@ export function createCreation(input: CreationInput): Creation {
     input.projectId ?? null,
     input.filePath ?? null,
     input.branch ?? null,
+    // 创建时即绑定默认角色（若指定）。此前 INSERT 不含 role_id，
+    // 导致 Creation.roleId 永远是 null、执行弹窗的默认角色也永远为空。
+    input.roleId ?? null,
     now,
     now
   )
