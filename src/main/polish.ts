@@ -141,35 +141,53 @@ export function polishDocument(
       log({ kind: 'err', text: `工作目录不存在，已回退到应用默认目录：${cwd}`, at: Date.now() })
     }
 
-    // 决定用哪种模式：有项目目录 + 文档相对路径 → 文件模式
-    const useFileMode = Boolean(workdir && docRelPath)
-    let args: string[]
-    let stdinPayload: string
-    let cmdPreview: string
+    // ---------- 决定内容来源 ----------
+    // 关联项目时优先读回项目里的那份文件：它由自动保存同步写入，
+    // 是「磁盘上的最新版本」，比内存里的 content 更能反映真实状态。
+    let source = content
+    let sourceLabel = `编辑器内容（${content.trim().length} 字符）`
 
-    if (useFileMode && workdir && docRelPath) {
-      info(`工作目录：${workdir}`)
+    if (workdir && docRelPath) {
+      const abs = path.join(workdir, docRelPath)
+      try {
+        if (fs.existsSync(abs)) {
+          const onDisk = fs.readFileSync(abs, 'utf8')
+          if (onDisk.trim()) {
+            source = onDisk
+            sourceLabel = `${docRelPath}（${onDisk.trim().length} 字符）`
+          } else {
+            log({ kind: 'err', text: `${docRelPath} 内容为空，改用编辑器里的内容`, at: Date.now() })
+          }
+        } else {
+          log({ kind: 'err', text: `文件不存在：${abs}，改用编辑器里的内容`, at: Date.now() })
+        }
+      } catch (err) {
+        log({ kind: 'err', text: `读取 ${docRelPath} 失败（${String(err)}），改用编辑器里的内容`, at: Date.now() })
+      }
+    }
+
+    if (!source.trim()) {
+      log({ kind: 'err', text: '文档内容为空', at: Date.now() })
+      resolve({ ok: false, text: content, error: '文档内容为空，无需润色。' })
+      return
+    }
+
+    // ---------- 组装命令 ----------
+    info(`工作目录：${workdir ?? '（应用默认目录，未关联项目）'}`)
+    if (workdir) {
       const claudeMd = path.join(workdir, 'CLAUDE.md')
       info(
         fs.existsSync(claudeMd)
           ? '该项目存在 CLAUDE.md，会作为上下文一并加载'
           : '该项目没有 CLAUDE.md'
       )
-      info(`文件模式：让 Claude Code 自己读取 ${docRelPath}`)
-      args = ['-p', '--tools', 'Read', '--append-system-prompt', SYSTEM_PROMPT]
-      stdinPayload =
-        `请读取文件 \`${docRelPath}\`，按系统提示的要求润色其中的文字。` +
-        `只读这一个文件，不要读取其他文件，也不要修改任何文件。` +
-        `把润色后的完整内容直接输出。`
-      cmdPreview = `claude -p --tools Read --append-system-prompt <润色规则>   # 让它自己读 ${docRelPath}`
-    } else {
-      info(`工作目录：${workdir ?? '（应用默认目录，未关联项目）'}`)
-      info('文本模式：正文通过 stdin 传入，不授予任何工具')
-      args = ['-p', '--tools', '', '--append-system-prompt', SYSTEM_PROMPT]
-      stdinPayload = content
-      cmdPreview = `claude -p --tools "" --append-system-prompt <润色规则>   # 正文由 stdin 传入，${trimmed.length} 字符`
     }
+    info(`管道模式：内容取自 ${sourceLabel}`)
 
+    const args = ['-p', '--tools', '', '--append-system-prompt', SYSTEM_PROMPT]
+    const cmdPreview =
+      `claude -p --tools "" --append-system-prompt <润色规则>   ` +
+      `# 内容经 stdin 管道传入，${source.trim().length} 字符`
     log({ kind: 'cmd', text: cmdPreview, at: Date.now() })
 
     let child
@@ -187,7 +205,7 @@ export function polishDocument(
       return
     }
 
-    info(useFileMode ? '已启动子进程，等待它读取文件并润色…' : '已启动子进程，正文已写入 stdin，等待模型返回…')
+    info('已启动子进程，内容经 stdin 管道送入，等待模型返回…')
 
     let stdout = ''
     let stderr = ''
@@ -258,7 +276,7 @@ export function polishDocument(
       child.stdin.on('error', () => {
         // 子进程提前退出时写 stdin 会报 EPIPE，属于正常情况，忽略
       })
-      child.stdin.write(stdinPayload, 'utf8')
+      child.stdin.write(source, 'utf8')
       child.stdin.end()
     }
   })
